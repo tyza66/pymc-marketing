@@ -234,6 +234,10 @@ from pymc_marketing.mmm.events import EventEffect, days_from_reference
 from pymc_marketing.mmm.fourier import FourierBase
 from pymc_marketing.mmm.linear_trend import LinearTrend
 from pymc_marketing.mmm.media_transformation import MediaTransformation
+from pymc_marketing.mmm.optimization_variables import (
+    _reject_missing_coords,
+    _reject_unknown_coords,
+)
 from pymc_marketing.mmm.validating import _validate_non_numeric_dtype
 from pymc_marketing.serialization import SerializableBaseModel, serialization
 
@@ -595,6 +599,12 @@ class DataVarMuEffect(MuEffect, ABC):
     def set_data(self, mmm: Model, model: pm.Model, X: xr.Dataset) -> None:
         """Update ``pm.Data`` variables from a new prediction dataset.
 
+        Each variable of ``data_vars`` present in ``X`` is matched to the model's
+        coordinates by label on every dim other than ``date`` that carries labels
+        in both ``X`` and the model, so those labels may run in any order. Other
+        dims are written by position. Variables absent from ``X`` keep their
+        current values.
+
         Parameters
         ----------
         mmm : Model
@@ -603,10 +613,27 @@ class DataVarMuEffect(MuEffect, ABC):
             The PyMC model.
         X : xr.Dataset
             The new prediction dataset.
+
+        Raises
+        ------
+        ValueError
+            If a variable in ``X`` has dim labels the model does not have, or
+            lacks labels the model has.
         """
         for var_name in self.data_vars:
-            if var_name in X.data_vars:
-                pm.set_data({var_name: X[var_name].values}, model=model)
+            if var_name not in X.data_vars:
+                continue
+            da = X[var_name]
+            coords = {
+                dim: np.asarray(model.coords[dim]).tolist()
+                for dim in da.dims
+                if dim != "date"
+                and dim in da.indexes
+                and model.coords.get(dim) is not None
+            }
+            _reject_unknown_coords(da, coords, label=repr(var_name))
+            _reject_missing_coords(da, coords, label=repr(var_name))
+            pm.set_data({var_name: da.reindex(coords).values}, model=model)
 
 
 class MediaMuEffect(DataVarMuEffect):
